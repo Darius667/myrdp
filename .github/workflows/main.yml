@@ -20,10 +20,10 @@ jobs:
                              -Name "SecurityLayer" -Value 0 -Force
 
           # Remove any existing rule with the same name to avoid duplication
-          netsh advfirewall firewall delete rule name="RDP-Tailscale"
-          
+          netsh advfirewall firewall delete rule name="RDP-In"
+
           # For testing, allow any incoming connection on port 3389
-          netsh advfirewall firewall add rule name="RDP-Tailscale" `
+          netsh advfirewall firewall add rule name="RDP-In" `
             dir=in action=allow protocol=TCP localport=3389
 
           # (Optional) Restart the Remote Desktop service to ensure changes take effect
@@ -49,66 +49,79 @@ jobs:
           New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
           Add-LocalGroupMember -Group "Administrators" -Member "RDP"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
-          
+
           echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
-          
+
           if (-not (Get-LocalUser -Name "RDP")) {
               Write-Error "User creation failed"
               exit 1
           }
 
-      - name: Install Tailscale
+      - name: Resolve Runner Addresses
         run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $installerPath = "$env:TEMP\tailscale.msi"
-          
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-          Remove-Item $installerPath -Force
+          $localIP = (Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway } |
+                      Select-Object -First 1).IPv4Address.IPAddress
+          echo "LOCAL_IP=$localIP" >> $env:GITHUB_ENV
 
-      - name: Establish Tailscale Connection
-        run: |
-          # Bring up Tailscale with the provided auth key and set a unique hostname
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
-          
-          # Wait for Tailscale to assign an IP
-          $tsIP = $null
-          $retries = 0
-          while (-not $tsIP -and $retries -lt 10) {
-              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              Start-Sleep -Seconds 5
-              $retries++
-          }
-          
-          if (-not $tsIP) {
-              Write-Error "Tailscale IP not assigned. Exiting."
-              exit 1
-          }
-          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-      
       - name: Verify RDP Accessibility
         run: |
-          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
-          
-          # Test connectivity using Test-NetConnection against the Tailscale IP on port 3389
-          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
+          Write-Host "Local IP: $env:LOCAL_IP"
+
+          # Test connectivity against the local address on port 3389
+          $testResult = Test-NetConnection -ComputerName $env:LOCAL_IP -Port 3389
           if (-not $testResult.TcpTestSucceeded) {
               Write-Error "TCP connection to RDP port 3389 failed"
               exit 1
           }
           Write-Host "TCP connectivity successful!"
 
+      - name: Start ngrok TCP Tunnel
+        env:
+          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
+        run: |
+          if (-not $env:NGROK_AUTH_TOKEN) {
+              Write-Error "NGROK_AUTH_TOKEN secret is not set"
+              exit 1
+          }
+
+          choco install ngrok -y --no-progress
+          ngrok config add-authtoken $env:NGROK_AUTH_TOKEN
+
+          Start-Process -FilePath "ngrok" -ArgumentList "tcp", "3389", "--log=stdout" `
+            -RedirectStandardOutput "$env:RUNNER_TEMP\ngrok.log" -WindowStyle Hidden
+
+          # Poll the local ngrok API until the public TCP address is published
+          $tunnelUrl = $null
+          $retries = 0
+          while (-not $tunnelUrl -and $retries -lt 20) {
+              Start-Sleep -Seconds 3
+              try {
+                  $tunnels = (Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels").tunnels
+                  $tunnelUrl = ($tunnels | Where-Object { $_.proto -eq "tcp" } |
+                                Select-Object -First 1).public_url
+              } catch { }
+              $retries++
+          }
+
+          if (-not $tunnelUrl) {
+              Write-Error "ngrok tunnel was not established"
+              Get-Content "$env:RUNNER_TEMP\ngrok.log" -ErrorAction SilentlyContinue
+              exit 1
+          }
+
+          # tcp://<host>:<port> -> host:port for mstsc
+          echo "RDP_ADDRESS=$($tunnelUrl -replace '^tcp://','')" >> $env:GITHUB_ENV
+
       - name: Maintain Connection
         run: |
           Write-Host "`n=== RDP ACCESS ==="
-          Write-Host "Address: $env:TAILSCALE_IP"
+          Write-Host "Address: $env:RDP_ADDRESS"
           Write-Host "Username: RDP"
           Write-Host "Password: $(echo $env:RDP_CREDS)"
           Write-Host "==================`n"
-          
+
           # Keep runner active indefinitely (or until manually cancelled)
           while ($true) {
               Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
               Start-Sleep -Seconds 300
           }
-
