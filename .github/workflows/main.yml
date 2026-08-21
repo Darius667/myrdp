@@ -61,15 +61,11 @@ jobs:
         run: |
           $localIP = (Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway } |
                       Select-Object -First 1).IPv4Address.IPAddress
-          $publicIP = (Invoke-RestMethod -Uri "https://api.ipify.org?format=json").ip
-
           echo "LOCAL_IP=$localIP" >> $env:GITHUB_ENV
-          echo "PUBLIC_IP=$publicIP" >> $env:GITHUB_ENV
 
       - name: Verify RDP Accessibility
         run: |
           Write-Host "Local IP: $env:LOCAL_IP"
-          Write-Host "Public IP: $env:PUBLIC_IP"
 
           # Test connectivity against the local address on port 3389
           $testResult = Test-NetConnection -ComputerName $env:LOCAL_IP -Port 3389
@@ -79,11 +75,47 @@ jobs:
           }
           Write-Host "TCP connectivity successful!"
 
+      - name: Start ngrok TCP Tunnel
+        env:
+          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
+        run: |
+          if (-not $env:NGROK_AUTH_TOKEN) {
+              Write-Error "NGROK_AUTH_TOKEN secret is not set"
+              exit 1
+          }
+
+          choco install ngrok -y --no-progress
+          ngrok config add-authtoken $env:NGROK_AUTH_TOKEN
+
+          Start-Process -FilePath "ngrok" -ArgumentList "tcp", "3389", "--log=stdout" `
+            -RedirectStandardOutput "$env:RUNNER_TEMP\ngrok.log" -WindowStyle Hidden
+
+          # Poll the local ngrok API until the public TCP address is published
+          $tunnelUrl = $null
+          $retries = 0
+          while (-not $tunnelUrl -and $retries -lt 20) {
+              Start-Sleep -Seconds 3
+              try {
+                  $tunnels = (Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels").tunnels
+                  $tunnelUrl = ($tunnels | Where-Object { $_.proto -eq "tcp" } |
+                                Select-Object -First 1).public_url
+              } catch { }
+              $retries++
+          }
+
+          if (-not $tunnelUrl) {
+              Write-Error "ngrok tunnel was not established"
+              Get-Content "$env:RUNNER_TEMP\ngrok.log" -ErrorAction SilentlyContinue
+              exit 1
+          }
+
+          # tcp://<host>:<port> -> host:port for mstsc
+          echo "RDP_ADDRESS=$($tunnelUrl -replace '^tcp://','')" >> $env:GITHUB_ENV
+
       - name: Maintain Connection
         run: |
           Write-Host "`n=== RDP ACCESS ==="
-          Write-Host "Local Address: $env:LOCAL_IP"
-          Write-Host "Public Address: $env:PUBLIC_IP"
+          Write-Host "Address: $env:RDP_ADDRESS"
           Write-Host "Username: RDP"
           Write-Host "Password: $(echo $env:RDP_CREDS)"
           Write-Host "==================`n"
