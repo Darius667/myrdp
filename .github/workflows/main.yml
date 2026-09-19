@@ -70,8 +70,6 @@ jobs:
           New-Item -Path 'HKCU:\Software\Microsoft\GameBar' -Force | Out-Null
           New-ItemProperty -Path 'HKCU:\Software\Microsoft\GameBar' `
             -Name AutoGameModeEnabled -PropertyType DWord -Value 1 -Force | Out-Null
-          New-Item -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' `
-            -Force | Out-Null
           New-ItemProperty `
             -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' `
             -Name HwSchMode -PropertyType DWord -Value 2 -Force | Out-Null
@@ -116,9 +114,15 @@ jobs:
           }
           $tailscale = Join-Path $env:ProgramFiles 'Tailscale\tailscale.exe'
           & $tailscale up --authkey=$env:TAILSCALE_AUTH_KEY --hostname=github-rdp-$env:GITHUB_RUN_ID
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Tailscale rejected TAILSCALE_AUTH_KEY. Replace the repository secret with a fresh auth key.'
+          }
           $ip = $null
           for ($attempt = 0; $attempt -lt 12 -and -not $ip; $attempt++) {
-            $ip = (& $tailscale ip -4).Trim()
+            $ipOutput = & $tailscale ip -4
+            if ($LASTEXITCODE -eq 0 -and $ipOutput) {
+              $ip = ($ipOutput | Select-Object -First 1).ToString().Trim()
+            }
             if (-not $ip) { Start-Sleep -Seconds 5 }
           }
           if (-not $ip) { throw 'Tailscale did not receive an IPv4 address.' }
