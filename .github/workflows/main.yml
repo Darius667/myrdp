@@ -109,6 +109,34 @@ jobs:
           }
           Write-Host "Restored game saves from artifact $($latestArtifact.name)."
 
+      - name: Install Epic Games Launcher and FiveM
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $downloads = Join-Path $env:USERPROFILE 'Downloads'
+          New-Item -Path $downloads -ItemType Directory -Force | Out-Null
+
+          $epicInstaller = Join-Path $env:RUNNER_TEMP 'EpicGamesLauncherInstaller.msi'
+          Invoke-WebRequest `
+            -Uri 'https://launcher-public-service-prod06.ol.epicgames.com/launcher/api/installer/download/EpicGamesLauncherInstaller.msi' `
+            -OutFile $epicInstaller
+          Start-Process msiexec.exe -Wait -ArgumentList '/i', $epicInstaller, '/qn', '/norestart'
+          Remove-Item $epicInstaller -Force
+
+          $fiveM = Join-Path $downloads 'FiveM.exe'
+          Invoke-WebRequest -Uri 'https://runtime.fivem.net/client/FiveM.exe' -OutFile $fiveM
+          Write-Host "FiveM downloaded to $fiveM."
+
+          $epicPath = @(
+            "$env:ProgramFiles(x86)\Epic Games\Launcher\Portal\Binaries\Win64\EpicGamesLauncher.exe",
+            "$env:ProgramFiles\Epic Games\Launcher\Portal\Binaries\Win64\EpicGamesLauncher.exe"
+          ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          if (-not $epicPath) {
+            throw 'Epic Games Launcher installation did not produce the expected executable.'
+          }
+          Start-Process -FilePath $epicPath
+          Write-Host 'Sign in to Epic Games manually, install GTA V, then run FiveM.exe from Downloads.'
+
       - name: Optimize runner for gaming
         shell: powershell
         run: |
