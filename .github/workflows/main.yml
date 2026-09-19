@@ -1,106 +1,155 @@
-name: RDP
+name: Temporary Gaming RDP
 
 on:
   workflow_dispatch:
+    inputs:
+      username:
+        description: Local Windows username
+        required: false
+        default: rdpuser
+        type: string
+
+permissions:
+  contents: read
 
 jobs:
-  secure-rdp:
+  rdp:
     runs-on: windows-latest
-    timeout-minutes: 3600
+    timeout-minutes: 350
 
     steps:
-      - name: Configure Core RDP Settings
+      - name: Configure Windows Remote Desktop
+        shell: powershell
+        env:
+          RDP_USERNAME: ${{ inputs.username }}
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: |
-          # Enable Remote Desktop and disable Network Level Authentication (if needed)
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-                             -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "SecurityLayer" -Value 0 -Force
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:RDP_PASSWORD) -or $env:RDP_PASSWORD.Length -lt 12) {
+            throw 'Set the RDP_PASSWORD repository secret to a password of at least 12 characters.'
+          }
+          if ($env:RDP_USERNAME -notmatch '^[A-Za-z0-9._-]{1,20}$') {
+            throw 'The username may contain only letters, numbers, dot, underscore, and hyphen.'
+          }
 
-          # Remove any existing rule with the same name to avoid duplication
-          netsh advfirewall firewall delete rule name="RDP-Tailscale"
-          
-          # For testing, allow any incoming connection on port 3389
-          netsh advfirewall firewall add rule name="RDP-Tailscale" `
-            dir=in action=allow protocol=TCP localport=3389
+          $securePassword = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
+          $existingUser = Get-LocalUser -Name $env:RDP_USERNAME -ErrorAction SilentlyContinue
+          if ($existingUser) {
+            Set-LocalUser -Name $env:RDP_USERNAME -Password $securePassword
+          } else {
+            New-LocalUser -Name $env:RDP_USERNAME -Password $securePassword `
+              -AccountNeverExpires -PasswordNeverExpires
+          }
+          $rdpUsersGroup = (Get-LocalGroup -SID 'S-1-5-32-555').Name
+          Add-LocalGroupMember -Group $rdpUsersGroup -Member $env:RDP_USERNAME -ErrorAction SilentlyContinue
 
-          # (Optional) Restart the Remote Desktop service to ensure changes take effect
-          Restart-Service -Name TermService -Force
+          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+            -Name fDenyTSConnections -Value 0
+          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+            -Name UserAuthentication -Value 1
+          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+            -Name SecurityLayer -Value 2
+          Set-Service -Name TermService -StartupType Automatic
+          Start-Service -Name TermService
 
-      - name: Create RDP User with Secure Password
+      - name: Optimize runner for gaming
+        shell: powershell
         run: |
-          Add-Type -AssemblyName System.Security
-          $charSet = @{
-              Upper   = [char[]](65..90)      # A-Z
-              Lower   = [char[]](97..122)     # a-z
-              Number  = [char[]](48..57)      # 0-9
-              Special = ([char[]](33..47) + [char[]](58..64) +
-                         [char[]](91..96) + [char[]](123..126)) # Special characters
-          }
-          $rawPassword = @()
-          $rawPassword += $charSet.Upper | Get-Random -Count 4
-          $rawPassword += $charSet.Lower | Get-Random -Count 4
-          $rawPassword += $charSet.Number | Get-Random -Count 4
-          $rawPassword += $charSet.Special | Get-Random -Count 4
-          $password = -join ($rawPassword | Sort-Object { Get-Random })
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
-          
-          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
-          
-          if (-not (Get-LocalUser -Name "RDP")) {
-              Write-Error "User creation failed"
-              exit 1
-          }
+          $ErrorActionPreference = 'Stop'
+
+          # Use Windows High performance mode and avoid CPU parking/throttling
+          # while connected to AC power.
+          powercfg /setactive SCHEME_MIN
+          powercfg /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCTHROTTLEMIN 100
+          powercfg /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCTHROTTLEMAX 100
+          powercfg /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR SYSTEMCOOLINGPOLICY 1
+          powercfg /setactive SCHEME_CURRENT
+
+          # Enable Game Mode and hardware-accelerated GPU scheduling when the
+          # runner's Windows build and virtual GPU support them.
+          New-Item -Path 'HKCU:\Software\Microsoft\GameBar' -Force | Out-Null
+          New-ItemProperty -Path 'HKCU:\Software\Microsoft\GameBar' `
+            -Name AutoGameModeEnabled -PropertyType DWord -Value 1 -Force | Out-Null
+          New-Item -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' `
+            -Force | Out-Null
+          New-ItemProperty `
+            -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' `
+            -Name HwSchMode -PropertyType DWord -Value 2 -Force | Out-Null
+
+          # Remove capture overhead and unnecessary animations for a more
+          # responsive remote desktop session.
+          New-Item -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR' `
+            -Force | Out-Null
+          New-ItemProperty `
+            -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR' `
+            -Name AppCaptureEnabled -PropertyType DWord -Value 0 -Force | Out-Null
+          New-ItemProperty `
+            -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' `
+            -Name VisualFXSetting -PropertyType DWord -Value 2 -Force | Out-Null
+
+          # Keep RDP's UDP transport available for lower input latency.
+          New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' `
+            -Force | Out-Null
+          New-ItemProperty `
+            -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' `
+            -Name fClientDisableUDP -PropertyType DWord -Value 0 -Force | Out-Null
 
       - name: Install Tailscale
+        shell: powershell
         run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $installerPath = "$env:TEMP\tailscale.msi"
-          
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-          Remove-Item $installerPath -Force
+          $ErrorActionPreference = 'Stop'
+          $installer = Join-Path $env:TEMP 'tailscale.msi'
+          Invoke-WebRequest `
+            -Uri 'https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi' `
+            -OutFile $installer
+          Start-Process msiexec.exe -Wait -ArgumentList '/i', $installer, '/qn', '/norestart'
+          Remove-Item $installer -Force
 
-      - name: Establish Tailscale Connection
+      - name: Connect to Tailscale
+        shell: powershell
+        env:
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
-          # Bring up Tailscale with the provided auth key and set a unique hostname
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
-          
-          # Wait for Tailscale to assign an IP
-          $tsIP = $null
-          $retries = 0
-          while (-not $tsIP -and $retries -lt 10) {
-              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              Start-Sleep -Seconds 5
-              $retries++
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTH_KEY)) {
+            throw 'Set the TAILSCALE_AUTH_KEY repository secret before starting this workflow.'
           }
-          
-          if (-not $tsIP) {
-              
+          $tailscale = Join-Path $env:ProgramFiles 'Tailscale\tailscale.exe'
+          & $tailscale up --authkey=$env:TAILSCALE_AUTH_KEY --hostname=github-rdp-$env:GITHUB_RUN_ID
+          $ip = $null
+          for ($attempt = 0; $attempt -lt 12 -and -not $ip; $attempt++) {
+            $ip = (& $tailscale ip -4).Trim()
+            if (-not $ip) { Start-Sleep -Seconds 5 }
           }
-          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-      
-      - name: Verify RDP Accessibility
-        run: |
-          }
-          Write-Host "TCP connectivity successful!"
+          if (-not $ip) { throw 'Tailscale did not receive an IPv4 address.' }
+          "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
 
-      - name: Maintain Connection
+      - name: Restrict RDP firewall to Tailscale
+        shell: powershell
         run: |
-          Write-Host "`n=== RDP ACCESS ==="
+          $ErrorActionPreference = 'Stop'
+          Get-NetFirewallRule -DisplayGroup 'Remote Desktop' -ErrorAction SilentlyContinue |
+            Disable-NetFirewallRule
+          New-NetFirewallRule -DisplayName 'RDP over Tailscale only' `
+            -Direction Inbound -Action Allow -Protocol TCP -LocalPort 3389 `
+            -RemoteAddress '100.64.0.0/10' -Profile Any
+          if (-not (Get-NetTCPConnection -LocalPort 3389 -State Listen -ErrorAction SilentlyContinue)) {
+            throw 'RDP is not listening on the Tailscale interface.'
+          }
+
+      - name: Display connection details
+        shell: powershell
+        env:
+          RDP_USERNAME: ${{ inputs.username }}
+        run: |
+          Write-Host 'RDP is ready (the password is the RDP_PASSWORD repository secret).'
           Write-Host "Address: $env:TAILSCALE_IP"
-          Write-Host "Username: RDP"
-          Write-Host "Password: $(echo $env:RDP_CREDS)"
-          Write-Host "==================`n"
-          
-          # Keep runner active indefinitely (or until manually cancelled)
-          while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
-              Start-Sleep -Seconds 300
-          }
+          Write-Host "Username: $env:RDP_USERNAME"
 
+      - name: Keep RDP available
+        shell: powershell
+        run: |
+          while ($true) {
+            Write-Host "[$(Get-Date -Format o)] RDP active"
+            Start-Sleep -Seconds 300
+          }
