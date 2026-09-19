@@ -157,3 +157,41 @@ jobs:
             Write-Host "[$(Get-Date -Format o)] RDP active"
             Start-Sleep -Seconds 300
           }
+
+      - name: Collect game saves
+        if: ${{ always() }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $backup = Join-Path $env:RUNNER_TEMP 'game-saves'
+          New-Item -Path $backup -ItemType Directory -Force | Out-Null
+
+          $locations = @(
+            @{ Name = 'Documents-My-Games'; Path = Join-Path $env:USERPROFILE 'Documents\My Games' },
+            @{ Name = 'Saved-Games'; Path = Join-Path $env:USERPROFILE 'Saved Games' },
+            @{ Name = 'AppData-Roaming'; Path = Join-Path $env:APPDATA },
+            @{ Name = 'AppData-Local'; Path = Join-Path $env:LOCALAPPDATA },
+            @{ Name = 'AppData-LocalLow'; Path = Join-Path $env:USERPROFILE 'AppData\LocalLow' }
+          )
+
+          foreach ($location in $locations) {
+            if (Test-Path -LiteralPath $location.Path) {
+              $destination = Join-Path $backup $location.Name
+              New-Item -Path $destination -ItemType Directory -Force | Out-Null
+              Copy-Item -LiteralPath $location.Path -Destination $destination `
+                -Recurse -Force -ErrorAction SilentlyContinue
+            }
+          }
+
+          $archive = Join-Path $env:RUNNER_TEMP 'game-saves.zip'
+          Compress-Archive -Path (Join-Path $backup '*') -DestinationPath $archive -CompressionLevel Optimal
+          "GAME_SAVES_ARCHIVE=$archive" >> $env:GITHUB_ENV
+
+      - name: Upload game saves
+        if: ${{ always() && env.GAME_SAVES_ARCHIVE != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: game-saves-${{ github.run_id }}
+          path: ${{ env.GAME_SAVES_ARCHIVE }}
+          retention-days: 90
+          if-no-files-found: error
