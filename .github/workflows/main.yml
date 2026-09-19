@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   rdp:
@@ -51,6 +52,62 @@ jobs:
             -Name SecurityLayer -Value 2
           Set-Service -Name TermService -StartupType Automatic
           Start-Service -Name TermService
+
+      - name: Restore latest game saves
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $headers = @{
+            Accept = 'application/vnd.github+json'
+            Authorization = "Bearer $env:GH_TOKEN"
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          $runsUri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs?workflow_id=main.yml&status=completed&per_page=20"
+          $runs = Invoke-RestMethod -Uri $runsUri -Headers $headers
+          $latestArtifact = $null
+          foreach ($run in $runs.workflow_runs | Where-Object { $_.id -ne [int64]$env:GITHUB_RUN_ID -and $_.conclusion -eq 'success' }) {
+            $artifactsUri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs/$($run.id)/artifacts?per_page=100"
+            $artifactResponse = Invoke-RestMethod -Uri $artifactsUri -Headers $headers
+            $latestArtifact = $artifactResponse.artifacts |
+              Where-Object { $_.name -like 'game-saves-*' -and -not $_.expired } |
+              Select-Object -First 1
+            if ($latestArtifact) { break }
+          }
+
+          if (-not $latestArtifact) {
+            Write-Host 'No previous game-save backup found; starting with a clean profile.'
+            exit 0
+          }
+
+          $outerArchive = Join-Path $env:RUNNER_TEMP 'previous-game-saves-artifact.zip'
+          Invoke-WebRequest -Uri $latestArtifact.archive_download_url -Headers $headers -OutFile $outerArchive
+          $outerDirectory = Join-Path $env:RUNNER_TEMP 'previous-game-saves-artifact'
+          Expand-Archive -LiteralPath $outerArchive -DestinationPath $outerDirectory -Force
+          $archive = Get-ChildItem -Path $outerDirectory -Filter 'game-saves.zip' -Recurse | Select-Object -First 1
+          if (-not $archive) {
+            throw 'The previous game-save artifact did not contain game-saves.zip.'
+          }
+
+          $saveRoot = Join-Path $env:RUNNER_TEMP 'restored-game-saves'
+          Expand-Archive -LiteralPath $archive.FullName -DestinationPath $saveRoot -Force
+          $restoreMap = @{
+            'Documents-My-Games' = Join-Path $env:USERPROFILE 'Documents\My Games'
+            'Saved-Games'        = Join-Path $env:USERPROFILE 'Saved Games'
+            'AppData-Roaming'    = $env:APPDATA
+            'AppData-Local'      = $env:LOCALAPPDATA
+            'AppData-LocalLow'   = Join-Path $env:USERPROFILE 'AppData\LocalLow'
+          }
+          foreach ($entry in $restoreMap.GetEnumerator()) {
+            $source = Join-Path $saveRoot $entry.Key
+            if (Test-Path -LiteralPath $source) {
+              New-Item -Path $entry.Value -ItemType Directory -Force | Out-Null
+              Copy-Item -Path (Join-Path $source '*') -Destination $entry.Value `
+                -Recurse -Force -ErrorAction SilentlyContinue
+            }
+          }
+          Write-Host "Restored game saves from artifact $($latestArtifact.name)."
 
       - name: Optimize runner for gaming
         shell: powershell
