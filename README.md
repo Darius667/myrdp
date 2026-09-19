@@ -30,6 +30,11 @@ enabled for lower input latency. GitHub-hosted runners are still shared
 virtual machines, so they may not provide a gaming GPU or consistent frame
 rates.
 
+Each new runner also installs the official Epic Games Launcher and downloads
+the official FiveM client to `Downloads\FiveM.exe`. Sign in to Epic manually,
+install GTA V from your library, and then launch FiveM. Epic credentials are
+never stored in this repository or workflow.
+
 GitHub-hosted runners have limited lifetime and are not dedicated gaming
 machines. RDP is also not optimized for high-refresh gaming; Sunshine and
 Moonlight generally provide better game streaming.
