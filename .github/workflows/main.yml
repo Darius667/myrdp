@@ -70,8 +70,6 @@ jobs:
           New-Item -Path 'HKCU:\Software\Microsoft\GameBar' -Force | Out-Null
           New-ItemProperty -Path 'HKCU:\Software\Microsoft\GameBar' `
             -Name AutoGameModeEnabled -PropertyType DWord -Value 1 -Force | Out-Null
-          New-Item -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' `
-            -Force | Out-Null
           New-ItemProperty `
             -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' `
             -Name HwSchMode -PropertyType DWord -Value 2 -Force | Out-Null
