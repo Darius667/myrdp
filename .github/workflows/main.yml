@@ -43,6 +43,8 @@ jobs:
           }
           $rdpUsersGroup = (Get-LocalGroup -SID 'S-1-5-32-555').Name
           Add-LocalGroupMember -Group $rdpUsersGroup -Member $env:RDP_USERNAME -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group 'Administrators' -Member $env:RDP_USERNAME `
+            -ErrorAction SilentlyContinue
 
           Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
             -Name fDenyTSConnections -Value 0
