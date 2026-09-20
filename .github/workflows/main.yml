@@ -29,6 +29,7 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:RDP_PASSWORD) -or $env:RDP_PASSWORD.Length -lt 12) {
             throw 'Set the RDP_PASSWORD repository secret to a password of at least 12 characters.'
           }
+          $env:RDP_USERNAME = $env:RDP_USERNAME.Trim()
           if ($env:RDP_USERNAME -notmatch '^[A-Za-z0-9._-]{1,20}$') {
             throw 'The username may contain only letters, numbers, dot, underscore, and hyphen.'
           }
@@ -256,8 +257,8 @@ jobs:
           $locations = @(
             @{ Name = 'Documents-My-Games'; Path = Join-Path $env:USERPROFILE 'Documents\My Games' },
             @{ Name = 'Saved-Games'; Path = Join-Path $env:USERPROFILE 'Saved Games' },
-            @{ Name = 'AppData-Roaming'; Path = Join-Path $env:APPDATA },
-            @{ Name = 'AppData-Local'; Path = Join-Path $env:LOCALAPPDATA },
+            @{ Name = 'AppData-Roaming'; Path = $env:APPDATA },
+            @{ Name = 'AppData-Local'; Path = $env:LOCALAPPDATA },
             @{ Name = 'AppData-LocalLow'; Path = Join-Path $env:USERPROFILE 'AppData\LocalLow' }
           )
 
